@@ -1,0 +1,343 @@
+{
+  "name": "AI Lead Automation Pipeline",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "incoming-lead",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "f5b8a05c-e587-4d9f-93d3-a554d68cf230",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        100,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const { name, email, company, message } = $input.item.json.body || {};\n\n// Basic input validation\nif (!email || !email.includes('@')) {\n  throw new Error('Validation Failed: Email is missing or invalid.');\n}\n\nif (!message || message.trim().length === 0) {\n  throw new Error('Validation Failed: Message is empty.');\n}\n\nreturn {\n  json: {\n    name: name || 'Anonymous',\n    email: email.trim().toLowerCase(),\n    company: company || '',\n    message: message.trim()\n  }\n};"
+      },
+      "id": "e0a6d0c2-75d1-41be-8e01-14cbe841029c",
+      "name": "Validate Input Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        300,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.BACKEND_API_URL || 'http://backend:8000'}}/enrich",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"name\": \"{{$json.name}}\",\n  \"email\": \"{{$json.email}}\",\n  \"company\": \"{{$json.company}}\"\n}",
+        "options": {
+          "retryOnFail": true,
+          "maxRedirects": 3
+        }
+      },
+      "id": "b3e9b1bc-12ab-41c3-ac62-430bd12cd1ae",
+      "name": "Call FastAPI /enrich",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        500,
+        200
+      ],
+      "retryOnFail": true,
+      "maxRetries": 3,
+      "delayBetweenRetries": 5000
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.BACKEND_API_URL || 'http://backend:8000'}}/classify",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"message\": \"{{$node[\"Validate Input Data\"].json.message}}\"\n}",
+        "options": {
+          "retryOnFail": true
+        }
+      },
+      "id": "9bc8d7b6-c56d-4eef-bd1f-c967db4a21bb",
+      "name": "Call FastAPI /classify",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        700,
+        200
+      ],
+      "retryOnFail": true,
+      "maxRetries": 3,
+      "delayBetweenRetries": 5000
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=INSERT INTO leads (\n  name, \n  email, \n  company, \n  linkedin_url, \n  company_size, \n  industry, \n  lead_message, \n  intent, \n  confidence, \n  status\n) VALUES (\n  '{{$node[\"Validate Input Data\"].json.name}}',\n  '{{$node[\"Validate Input Data\"].json.email}}',\n  '{{$node[\"Validate Input Data\"].json.company}}',\n  '{{$node[\"Call FastAPI /enrich\"].json.linkedin_url}}',\n  '{{$node[\"Call FastAPI /enrich\"].json.company_size}}',\n  '{{$node[\"Call FastAPI /enrich\"].json.industry}}',\n  '{{$node[\"Validate Input Data\"].json.message}}',\n  '{{$json.intent}}',\n  {{$json.confidence}},\n  'classified'\n)\nON CONFLICT (email) DO UPDATE SET\n  linkedin_url = EXCLUDED.linkedin_url,\n  company_size = EXCLUDED.company_size,\n  industry = EXCLUDED.industry,\n  lead_message = EXCLUDED.lead_message,\n  intent = EXCLUDED.intent,\n  confidence = EXCLUDED.confidence,\n  status = 'classified',\n  updated_at = NOW();"
+      },
+      "id": "d9e03bb4-098e-4a67-8cfb-6f81df6cc6ee",
+      "name": "Upsert to Supabase / Postgres",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [
+        950,
+        200
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "your-postgres-credential-id",
+          "name": "leads_db"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "c76f62ea-fcd3-4e44-93ff-183e20e890c2",
+              "leftValue": "={{$node[\"Call FastAPI /classify\"].json.intent}}",
+              "rightValue": "sales_enquiry",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            },
+            {
+              "id": "e98e4d3c-9a4f-4d43-bd21-d11e3b2e59df",
+              "leftValue": "={{$node[\"Call FastAPI /classify\"].json.confidence}}",
+              "rightValue": 0.75,
+              "operator": {
+                "type": "number",
+                "operation": "largerEqual"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "f8a02c34-bc2c-47ea-a2b1-d5b76abce920",
+      "name": "Is High-Value Sales Enquiry?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1150,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": "={{$env.SLACK_SALES_CHANNEL || '#sales-leads'}}",
+        "text": "=🔥 *New High-Value Lead Automated!* 🔥\n*Name:* {{$node[\"Validate Input Data\"].json.name}}\n*Email:* {{$node[\"Validate Input Data\"].json.email}}\n*Company:* {{$node[\"Validate Input Data\"].json.company}} ({{$node[\"Call FastAPI /enrich\"].json.company_size}}, {{$node[\"Call FastAPI /enrich\"].json.industry}})\n*Intent:* `{{$node[\"Call FastAPI /classify\"].json.intent}}` (Confidence: {{Math.round($node[\"Call FastAPI /classify\"].json.confidence * 100)}}%)\n*LinkedIn:* <{{$node[\"Call FastAPI /enrich\"].json.linkedin_url}}|Profile>\n*Message:* \"{{$node[\"Validate Input Data\"].json.message}}\"",
+        "otherOptions": {}
+      },
+      "id": "2d8f99e4-c5a1-432d-88b1-41be3f6ba9ee",
+      "name": "Send Slack (High-Value)",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2,
+      "position": [
+        1380,
+        100
+      ],
+      "credentials": {
+        "slackApi": {
+          "id": "your-slack-credential-id",
+          "name": "Slack App Token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": "={{$env.SLACK_OPS_CHANNEL || '#general-leads'}}",
+        "text": "=ℹ️ *New Lead Registered (Standard)*\n*Name:* {{$node[\"Validate Input Data\"].json.name}}\n*Email:* {{$node[\"Validate Input Data\"].json.email}}\n*Company:* {{$node[\"Validate Input Data\"].json.company}}\n*Intent:* `{{$node[\"Call FastAPI /classify\"].json.intent}}` (Confidence: {{Math.round($node[\"Call FastAPI /classify\"].json.confidence * 100)}}%)\n*Message:* \"{{$node[\"Validate Input Data\"].json.message}}\"",
+        "otherOptions": {}
+      },
+      "id": "a1b2c3d4-e5f6-4789-0123-456789abcdef",
+      "name": "Send Slack (Standard)",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2,
+      "position": [
+        1380,
+        300
+      ],
+      "credentials": {
+        "slackApi": {
+          "id": "your-slack-credential-id",
+          "name": "Slack App Token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"success\": true,\n  \"message\": \"Lead successfully processed, stored, and routed.\",\n  \"lead_id\": \"{{$node[\"Upsert to Supabase / Postgres\"].json.id || 'N/A'}}\",\n  \"intent\": \"{{$node[\"Call FastAPI /classify\"].json.intent}}\",\n  \"confidence\": {{$node[\"Call FastAPI /classify\"].json.confidence}}\n}"
+      },
+      "id": "0d2c8fb6-7c0a-48d6-bdc3-04b39e6a9f4c",
+      "name": "Success Response Node",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        1600,
+        200
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "ef8a1c90-bcd3-4e44-8d9e-1e5f7b8abce2",
+      "name": "Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        100,
+        550
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.OPS_NOTIFICATION_WEBHOOK_URL || 'https://hooks.slack.com/services/mock-error-webhook'}}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"text\": \"🚨 *Pipeline Error Alert* 🚨\\n*Workflow:* {{$workflow.name}}\\n*Execution ID:* {{$execution.id}}\\n*Error Node:* {{$json.execution.error.node.name}}\\n*Message:* {{$json.execution.error.message}}\"\n}",
+        "options": {}
+      },
+      "id": "18f9d0c2-3e4b-4c5d-9ea1-f8a1c90bcde3",
+      "name": "Notify Ops of Failure",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        350,
+        550
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "Validate Input Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Input Data": {
+      "main": [
+        [
+          {
+            "node": "Call FastAPI /enrich",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call FastAPI /enrich": {
+      "main": [
+        [
+          {
+            "node": "Call FastAPI /classify",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call FastAPI /classify": {
+      "main": [
+        [
+          {
+            "node": "Upsert to Supabase / Postgres",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upsert to Supabase / Postgres": {
+      "main": [
+        [
+          {
+            "node": "Is High-Value Sales Enquiry?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is High-Value Sales Enquiry?": {
+      "main": [
+        [
+          {
+            "node": "Send Slack (High-Value)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send Slack (Standard)",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Send Slack (High-Value)": {
+      "main": [
+        [
+          {
+            "node": "Success Response Node",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Slack (Standard)": {
+      "main": [
+        [
+          {
+            "node": "Success Response Node",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Error Trigger": {
+      "main": [
+        [
+          {
+            "node": "Notify Ops of Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionTimeout": 30
+  },
+  "meta": {
+    "templateId": "leads-automation-pipeline"
+  }
+}
