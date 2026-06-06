@@ -1,8 +1,9 @@
 import logging
 import sys
+import os
 from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, HTMLResponse
 from contextlib import asynccontextmanager
 
 from app.config import settings
@@ -19,6 +20,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger("app.main")
 
+# Cache index.html content on startup
+index_html_content = ""
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup tasks
@@ -28,6 +32,16 @@ async def lifespan(app: FastAPI):
     logger.info(f"Using Groq Model: {settings.GROQ_MODEL}")
     logger.info("Checking database connection...")
     
+    # Load index.html
+    global index_html_content
+    try:
+        html_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "index.html")
+        with open(html_path, "r", encoding="utf-8") as f:
+            index_html_content = f.read()
+            logger.info("Successfully cached static/index.html in memory.")
+    except Exception as e:
+        logger.error(f"Failed to load static/index.html on startup: {str(e)}")
+
     # Try testing database engine
     try:
         async with engine.connect() as conn:
@@ -98,13 +112,22 @@ async def health_check():
         "environment": settings.ENVIRONMENT
     }
 
-# Root route
+# Root route (serves the developer playground)
 @app.get(
     "/",
-    status_code=status.HTTP_200_OK,
-    tags=["System Health"]
+    response_class=HTMLResponse,
+    tags=["Playground"]
 )
 async def index():
-    return {
-        "message": "Welcome to the AI Lead Automation System (Aviara Labs) API. Use /docs to view Swagger documentation."
-    }
+    if not index_html_content:
+        # Fallback to loading from disk if cache is empty
+        try:
+            html_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "index.html")
+            with open(html_path, "r", encoding="utf-8") as f:
+                return HTMLResponse(content=f.read())
+        except Exception as e:
+            return HTMLResponse(
+                content=f"<h1>Error loading page: {str(e)}</h1>", 
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+    return HTMLResponse(content=index_html_content)
