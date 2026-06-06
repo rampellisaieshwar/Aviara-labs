@@ -6,9 +6,9 @@ import re
 EMAIL_REGEX = r"^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$"
 
 class EnrichRequest(BaseModel):
-    name: Optional[str] = Field(default=None, min_length=1, max_length=255, description="Lead's full name")
+    name: Optional[str] = Field(default=None, max_length=255, description="Lead's full name")
     email: EmailStr = Field(..., description="Lead's business or personal email address")
-    company: Optional[str] = Field(default=None, min_length=1, max_length=255, description="Lead's company name")
+    company: Optional[str] = Field(default=None, max_length=255, description="Lead's company name")
 
     @field_validator("email")
     @classmethod
