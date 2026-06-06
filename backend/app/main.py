@@ -1,6 +1,10 @@
 import logging
 import sys
 import os
+
+# Ensure backend directory is in python path for absolute imports on Vercel/serverless
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, HTMLResponse
