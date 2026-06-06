@@ -85,3 +85,19 @@ def test_classify_endpoint_empty_message():
     }
     response = client.post("/classify", json=payload)
     assert response.status_code == 422
+
+def test_database_url_scheme_validation():
+    """Verify that postgresql and postgres schemes are converted to postgresql+asyncpg."""
+    from app.config import Settings
+    
+    # 1. Test postgresql:// conversion
+    settings_1 = Settings(DATABASE_URL="postgresql://user:pass@host:5432/db")
+    assert settings_1.DATABASE_URL == "postgresql+asyncpg://user:pass@host:5432/db"
+    
+    # 2. Test postgres:// conversion
+    settings_2 = Settings(DATABASE_URL="postgres://user:pass@host:5432/db")
+    assert settings_2.DATABASE_URL == "postgresql+asyncpg://user:pass@host:5432/db"
+    
+    # 3. Test already asyncpg scheme remains unmodified
+    settings_3 = Settings(DATABASE_URL="postgresql+asyncpg://user:pass@host:5432/db")
+    assert settings_3.DATABASE_URL == "postgresql+asyncpg://user:pass@host:5432/db"
